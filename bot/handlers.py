@@ -1,3 +1,6 @@
+from services.ledger import compute_overview, compute_user_summary
+from services.sheets_repo import get_all_rows
+
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.callbacks import handle_callback
@@ -43,50 +46,88 @@ async def cmd_sheetinfo(update, context):
     else:
         await update.message.reply_text("Sheet not ready.")
 
-
 async def cmd_summary(update, context):
     uid = str(update.effective_user.id)
-    s = compute_user_summary(uid)
+    s = compute_user_summary(uid, get_all_rows)
 
-    text = (
-        f"📊 *Your OIL Summary*\n\n"
-        f"👤 Name: {s.user_name}\n"
-        f"🆔 ID: {s.user_id}\n"
-        f"🔹 Total OIL: {s.total_balance:.1f}\n"
-        f"🔸 Normal OIL: {s.normal_balance:.1f}\n"
-        f"🏖 Active PH OIL: {s.ph_active:.1f}\n"
-        f"⌛ Expired PH OIL: {s.ph_expired:.1f}\n"
-        f"⭐ Active Special OIL: {s.special_active:.1f}\n"
-        f"⌛ Expired Special OIL: {s.special_expired:.1f}\n"
-    )
+    lines = [
+        "📊 *Your OIL Summary*",
+        "",
+        f"👤 Name: {s.user_name}",
+        f"🆔 ID: {s.user_id}",
+        f"🔹 Available Total OIL: {s.total_balance:.1f}",
+        f"🔸 Normal OIL: {s.normal_balance:.1f}",
+        f"🏖 Active PH OIL: {s.ph_active:.1f}",
+        f"⌛ Expired PH OIL: {s.ph_expired:.1f}",
+        f"⭐ Active Special OIL: {s.special_active:.1f}",
+        f"⌛ Expired Special OIL: {s.special_expired:.1f}",
+    ]
+
+    if s.ph_active_entries:
+        lines.append("")
+        lines.append("*Active PH OIL Details*")
+        for e in s.ph_active_entries:
+            lines.append(f"- {e.remarks or 'PH'}: {e.qty:.1f} | {e.date} | Exp: {e.expiry or '—'}")
+
+    if s.ph_expired_entries:
+        lines.append("")
+        lines.append("*Expired PH OIL Details*")
+        for e in s.ph_expired_entries:
+            lines.append(f"- {e.remarks or 'PH'}: {e.qty:.1f} | {e.date} | Exp: {e.expiry or '—'}")
+
+    if s.special_active_entries:
+        lines.append("")
+        lines.append("*Active Special OIL Details*")
+        for e in s.special_active_entries:
+            lines.append(f"- {e.remarks or 'Special'}: {e.qty:.1f} | {e.date} | Exp: {e.expiry or '—'}")
+
+    if s.special_expired_entries:
+        lines.append("")
+        lines.append("*Expired Special OIL Details*")
+        for e in s.special_expired_entries:
+            lines.append(f"- {e.remarks or 'Special'}: {e.qty:.1f} | {e.date} | Exp: {e.expiry or '—'}")
 
     if s.last_action or s.last_application_date:
-        text += (
-            f"\nLast record:\n"
-            f"- Action: {s.last_action or '—'}\n"
-            f"- Application Date: {s.last_application_date or '—'}"
-        )
+        lines.append("")
+        lines.append("*Last Record*")
+        lines.append(f"- Action: {s.last_action or '—'}")
+        lines.append(f"- Application Date: {s.last_application_date or '—'}")
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_overview(update, context):
-    items = compute_overview()
+    items = compute_overview(get_all_rows)
     if not items:
         await update.message.reply_text("No records found.")
         return
 
-    lines = ["📋 *Sector OIL Overview*\n"]
+    blocks = ["📋 *Sector OIL Overview*"]
     for s in items:
-        lines.append(
-            f"{s.user_name}\n"
+        blocks.append(
+            f"\n{s.user_name}\n"
             f"Total: {s.total_balance:.1f} | "
             f"Normal: {s.normal_balance:.1f} | "
             f"PH: {s.ph_active:.1f} | "
             f"Special: {s.special_active:.1f}"
         )
 
-    text = "\n\n".join(lines)
+    text = "\n".join(blocks)
+
+    if len(text) <= 3800:
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    chunk = ""
+    for block in blocks:
+        piece = block + "\n"
+        if len(chunk) + len(piece) > 3800:
+            await update.message.reply_text(chunk.strip(), parse_mode="Markdown")
+            chunk = ""
+        chunk += piece
+
+    if chunk.strip():
+        await update.message.reply_text(chunk.strip(), parse_mode="Markdown")
 
     # Telegram message limit guard
     if len(text) <= 3800:
