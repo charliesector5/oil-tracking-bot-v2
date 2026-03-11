@@ -8,14 +8,12 @@ from bot.conversations import (
 )
 from bot.ui import (
     _is_group,
-    bold,
     build_calendar,
     cancel_keyboard,
     send_group_quiet,
     validate_application_date,
 )
 from services.runtime_state import pending_payloads, user_state
-from services.sheets_repo import last_off_for_user
 
 
 async def handle_callback(update, context):
@@ -109,9 +107,18 @@ async def handle_callback(update, context):
                 prompt = "📝 Enter remarks (optional). Type 'nil' to skip."
 
             if update.effective_chat and _is_group(update.effective_chat.type):
-                await send_group_quiet(context, q.message.chat.id, prompt, reply_markup=cancel_keyboard(st["sid"]))
+                await send_group_quiet(
+                    context,
+                    q.message.chat.id,
+                    prompt,
+                    reply_markup=cancel_keyboard(st["sid"]),
+                )
             else:
-                await context.bot.send_message(chat_id=q.message.chat.id, text=prompt, reply_markup=cancel_keyboard(st["sid"]))
+                await context.bot.send_message(
+                    chat_id=q.message.chat.id,
+                    text=prompt,
+                    reply_markup=cancel_keyboard(st["sid"]),
+                )
             return
 
         if st["flow"] == "newuser" and st["stage"] == "ph_date":
@@ -144,6 +151,7 @@ async def handle_callback(update, context):
         payload = pending_payloads.pop(key, None)
         approver = q.from_user.full_name
         approver_id = q.from_user.id
+        approved = kind == "approve"
 
         if not payload:
             try:
@@ -153,8 +161,13 @@ async def handle_callback(update, context):
             return
 
         if payload.get("type") == "newuser":
-            await handle_newuser_apply(update, context, payload, kind == "approve", approver, approver_id)
-            summary = build_admin_summary_text(payload, approved=(kind == "approve"), approver_name=approver, final_off=None)
+            await handle_newuser_apply(update, context, payload, approved, approver, approver_id)
+            summary = build_admin_summary_text(
+                payload,
+                approved=approved,
+                approver_name=approver,
+                final_off=None,
+            )
             try:
                 await q.edit_message_text(summary)
             except Exception:
@@ -162,21 +175,16 @@ async def handle_callback(update, context):
             return
 
         if payload.get("type") == "single":
-            await handle_single_apply(update, context, payload, kind == "approve", approver, approver_id)
-            final_off = None
-            if kind == "approve":
-                cur = last_off_for_user(payload["user_id"])
-                calc = cur + (payload["days"] if "clock" in payload["action"] else -payload["days"])
-                final_off = calc
+            final_off = payload.get("final_off") if approved else None
+            await handle_single_apply(update, context, payload, approved, approver, approver_id)
+            summary = build_admin_summary_text(
+                payload,
+                approved=approved,
+                approver_name=approver,
+                final_off=final_off,
+            )
             try:
-                await q.edit_message_text(
-                    build_admin_summary_text(
-                        payload,
-                        approved=(kind == "approve"),
-                        approver_name=approver,
-                        final_off=final_off,
-                    )
-                )
+                await q.edit_message_text(summary)
             except Exception:
                 pass
             return
