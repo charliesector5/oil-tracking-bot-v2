@@ -138,6 +138,25 @@ def _format_adjustoil_preview(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_massadjust_preview(payload: dict) -> str:
+    amount = float(payload["amount"])
+    lines = [
+        "🛠 *Mass Adjust OIL Confirmation*",
+        "",
+        f"🏷 Type: {payload['oil_type'].title()}",
+        f"🔢 Adjustment: {amount:+.1f}",
+        f"👥 Users Targeted: {payload['target_count']}",
+        f"📅 Application Date: {payload['application_date']}",
+        f"📝 Remarks: {payload['remarks']}",
+    ]
+    if payload.get("expiry"):
+        lines.append(f"⏳ Expiry: {payload['expiry']}")
+    if payload.get("skipped"):
+        lines.append("")
+        lines.append(f"⚠️ Will skip {len(payload['skipped'])} user(s) due to insufficient {payload['oil_type'].title()} balance.")
+    return "\n".join(lines)
+
+
 async def apply_adjustoil_payload(context: ContextTypes.DEFAULT_TYPE, payload: dict):
     uid = payload["target_user_id"]
     uname = payload["target_name"]
@@ -179,6 +198,66 @@ async def apply_adjustoil_payload(context: ContextTypes.DEFAULT_TYPE, payload: d
         is_special=is_special,
         special_total=special_total,
     )
+
+
+async def apply_massadjust_payload(context: ContextTypes.DEFAULT_TYPE, payload: dict):
+    amount = float(payload["amount"])
+    approver_name = payload["admin_name"]
+    app_date = payload["application_date"]
+    remarks = payload["remarks"]
+    oil_type = payload["oil_type"]
+    is_ph = payload["is_ph"]
+    is_special = payload["is_special"]
+    expiry = payload.get("expiry", "")
+
+    users = _extract_unique_users()
+    adjusted = []
+    skipped = []
+
+    for uid, uname in users:
+        summary = compute_user_summary(str(uid), get_all_rows)
+
+        if oil_type == "ph" and amount < 0 and summary.ph_active + amount < 0:
+            skipped.append(uname)
+            continue
+
+        if oil_type == "special" and amount < 0 and summary.special_active + amount < 0:
+            skipped.append(uname)
+            continue
+
+        current_off = last_off_for_user(uid)
+        final_off = current_off + amount
+
+        ph_total = 0.0
+        special_total = 0.0
+
+        if is_ph:
+            before, _ = compute_ph_entries_active(uid)
+            ph_total = before + amount
+
+        if is_special:
+            before, _active_special, _expired_special = compute_special_entries_breakdown(uid)
+            special_total = before + amount
+
+        append_row(
+            user_id=uid,
+            user_name=uname,
+            action=_sheet_action_from_amount(amount),
+            current_off=current_off,
+            add_subtract=amount,
+            final_off=final_off,
+            approved_by=approver_name,
+            application_date=app_date,
+            remarks=remarks,
+            is_ph=is_ph,
+            ph_total=ph_total,
+            expiry=expiry,
+            is_special=is_special,
+            special_total=special_total,
+        )
+        adjusted.append(uname)
+
+    return adjusted, skipped
 
 
 def build_admin_summary_text(payload: dict, approved: bool, approver_name: str, final_off: float | None) -> str:
@@ -393,6 +472,43 @@ async def cmd_adjustoil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_quiet(
         update,
         "🛠 Select which OIL type to adjust:",
+        reply_markup=kb,
+    )
+
+
+async def cmd_massadjustoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type == "private":
+        await update.message.reply_text("Please use /massadjustoff inside the group.")
+        return
+
+    is_admin = await _is_admin_in_chat(context, chat.id, update.effective_user.id)
+    if not is_admin:
+        await reply_quiet(update, "❌ Only group admins can use /massadjustoff.")
+        return
+
+    sid = str(uuid4())[:10]
+    user_state[update.effective_user.id] = {
+        "sid": sid,
+        "flow": "massadjustoff",
+        "stage": "awaiting_type",
+        "group_id": chat.id,
+        "owner_id": update.effective_user.id,
+        "admin_name": update.effective_user.full_name,
+    }
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Normal", callback_data=f"massadjtype|{sid}|normal"),
+            InlineKeyboardButton("PH", callback_data=f"massadjtype|{sid}|ph"),
+            InlineKeyboardButton("Special", callback_data=f"massadjtype|{sid}|special"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel|{sid}")],
+    ])
+
+    await reply_quiet(
+        update,
+        "🛠 Select which OIL type to mass adjust:",
         reply_markup=kb,
     )
 
@@ -915,6 +1031,92 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_quiet(
             update,
             _format_adjustoil_preview(payload),
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+        return
+
+    if st["flow"] == "massadjustoff" and st["stage"] == "awaiting_amount":
+        try:
+            amount = float(text)
+            if amount == 0 or not validate_half_step(amount):
+                raise ValueError()
+        except ValueError:
+            await reply_quiet(
+                update,
+                "❌ Invalid input. Use positive to add or negative to subtract in 0.5 steps.\nExamples: 1.0, -0.5",
+                reply_markup=cancel_keyboard(st["sid"]),
+            )
+            return
+
+        oil_type = st["oil_type"]
+        users = _extract_unique_users()
+        skipped = []
+
+        if amount < 0 and oil_type in ("ph", "special"):
+            for target_uid, target_name in users:
+                summary = compute_user_summary(str(target_uid), get_all_rows)
+                if oil_type == "ph" and summary.ph_active + amount < 0:
+                    skipped.append(target_name)
+                elif oil_type == "special" and summary.special_active + amount < 0:
+                    skipped.append(target_name)
+
+        app_date = date.today().strftime("%Y-%m-%d")
+        expiry = ""
+        if amount > 0 and oil_type in ("ph", "special"):
+            expiry = (date.today() + timedelta(days=365)).strftime("%Y-%m-%d")
+
+        st["amount"] = amount
+        st["application_date"] = app_date
+        st["is_ph"] = oil_type == "ph"
+        st["is_special"] = oil_type == "special"
+        st["expiry"] = expiry
+        st["skipped"] = skipped
+        st["stage"] = "awaiting_reason"
+
+        await reply_quiet(
+            update,
+            "📝 Enter reason for this mass adjustment.",
+            reply_markup=cancel_keyboard(st["sid"]),
+        )
+        return
+
+    if st["flow"] == "massadjustoff" and st["stage"] == "awaiting_reason":
+        reason = text.strip()
+        if not reason or reason.lower() == "nil":
+            await reply_quiet(
+                update,
+                "❌ Reason is required for mass adjustment.",
+                reply_markup=cancel_keyboard(st["sid"]),
+            )
+            return
+
+        payload = {
+            "oil_type": st["oil_type"],
+            "amount": st["amount"],
+            "application_date": st["application_date"],
+            "remarks": f"Mass adjustment by {st['admin_name']}: {reason[:120]}",
+            "admin_name": st["admin_name"],
+            "is_ph": st["is_ph"],
+            "is_special": st["is_special"],
+            "expiry": st.get("expiry", ""),
+            "target_count": len(_extract_unique_users()),
+            "skipped": st.get("skipped", []),
+        }
+
+        st["payload"] = payload
+        st["stage"] = "awaiting_confirm"
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data=f"massadjconfirm|{st['sid']}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel|{st['sid']}"),
+            ]
+        ])
+
+        await reply_quiet(
+            update,
+            _format_massadjust_preview(payload),
             parse_mode="Markdown",
             reply_markup=kb,
         )
