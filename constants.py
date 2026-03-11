@@ -5,26 +5,36 @@ HEALTH_OK_TEXT = "✅ Health check passed."
 
 HELP_TEXT = """\
 Available commands:
+
+General
 /start - bot status
 /help - show this help
 /ping - quick bot check
 /checksheet - verify Google Sheet connectivity
 /sheetinfo - show connected worksheet title
 
-Working in Phase 2A:
-/startadmin
-/history
-/clockoff
-/claimoff
-/clockphoff
-/claimphoff
-/clockspecialoff
-/claimspecialoff
-/newuser
+User Commands
+/history - view your recent OIL records
+/summary - view your OIL summary
+/clockoff - clock normal OIL
+/claimoff - claim normal OIL
+/clockphoff - clock PH OIL
+/claimphoff - claim PH OIL
+/clockspecialoff - clock Special OIL
+/claimspecialoff - claim Special OIL
+/newuser - import old OIL records for a brand-new user
 
-Temporarily under rebuild:
-/summary
-/overview
+Admin Commands
+/startadmin - start admin PM session
+/overview - view sector OIL overview
+/adjustoil - manually adjust one user's OIL
+/massadjustoff - mass adjust OIL for all tracked users
+
+Notes
+- For claim commands, the bot will show your current available balance first.
+- PH and Special claims cannot go below available active balance.
+- Normal OIL may go negative and will be flagged to admin where applicable.
+- Use -quit anytime during an active flow to cancel.
 """
 
 START_TEXT = """\
