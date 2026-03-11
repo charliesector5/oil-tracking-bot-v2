@@ -1,4 +1,4 @@
-from services.ledger import compute_overview, compute_user_summary
+from services.ledger import compute_overview, compute_user_summary, get_user_last_records
 from services.sheets_repo import get_all_rows
 
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, filters
@@ -49,6 +49,7 @@ async def cmd_sheetinfo(update, context):
 async def cmd_summary(update, context):
     uid = str(update.effective_user.id)
     s = compute_user_summary(uid, get_all_rows)
+    recent = get_user_last_records(uid, get_all_rows, limit=5)
 
     lines = [
         "📊 *Your OIL Summary*",
@@ -87,11 +88,13 @@ async def cmd_summary(update, context):
         for e in s.special_expired_entries:
             lines.append(f"- {e.remarks or 'Special'}: {e.qty:.1f} | {e.date} | Exp: {e.expiry or '—'}")
 
-    if s.last_action or s.last_application_date:
+    if recent:
         lines.append("")
-        lines.append("*Last Record*")
-        lines.append(f"- Action: {s.last_action or '—'}")
-        lines.append(f"- Application Date: {s.last_application_date or '—'}")
+        lines.append("*Last 5 Records*")
+        for r in recent:
+            lines.append(
+                f"- {r.timestamp} | {r.action} | {r.delta:+.1f} | Final: {r.final_off:.1f} | {r.remarks or '—'}"
+            )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
