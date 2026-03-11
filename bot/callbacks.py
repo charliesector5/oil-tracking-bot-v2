@@ -1,6 +1,9 @@
 from datetime import date, datetime
 
 from bot.conversations import (
+    apply_adjustoil_payload,
+    apply_massadjust_payload,
+    build_adjust_user_keyboard,
     build_admin_summary_text,
     handle_newuser_apply,
     handle_single_apply,
@@ -14,6 +17,7 @@ from bot.ui import (
     validate_application_date,
 )
 from services.runtime_state import pending_payloads, user_state
+from services.sheets_repo import last_off_for_user
 
 
 async def handle_callback(update, context):
@@ -51,10 +55,113 @@ async def handle_callback(update, context):
     if kind == "noop":
         return
 
-    if kind in ("calnav", "manual", "cal"):
+    if kind in ("calnav", "manual", "cal", "adjtype", "adjuser", "adjconfirm", "massadjtype", "massadjconfirm"):
         if not_owner_block():
             await q.answer("This isn’t your session.", show_alert=True)
             return
+
+    if kind == "adjtype":
+        oil_type = parts[2]
+        st["oil_type"] = oil_type
+        st["stage"] = "awaiting_target_user"
+
+        try:
+            await q.edit_message_text(
+                f"🛠 Selected OIL type: {oil_type.title()}\n\nChoose the personnel to adjust:",
+                reply_markup=build_adjust_user_keyboard(sid),
+            )
+        except Exception:
+            pass
+        return
+
+    if kind == "adjuser":
+        target_uid = parts[2]
+        users = {uid: name for uid, name in __import__("bot.conversations", fromlist=["_extract_unique_users"])._extract_unique_users()}
+        st["target_user_id"] = str(target_uid)
+        st["target_name"] = users.get(str(target_uid), str(target_uid))
+        st["stage"] = "awaiting_amount"
+
+        try:
+            await q.edit_message_text(
+                f"👤 Selected: {st['target_name']} ({st['target_user_id']})\n"
+                f"🏷 OIL Type: {st['oil_type'].title()}\n\n"
+                f"Enter adjustment amount.\n"
+                f"Use positive to add, negative to subtract.\n"
+                f"Examples: 1.0, -0.5",
+                reply_markup=cancel_keyboard(sid),
+            )
+        except Exception:
+            pass
+        return
+
+    if kind == "adjconfirm":
+        payload = st.get("payload")
+        if not payload:
+            await q.answer("Nothing to confirm.", show_alert=True)
+            return
+
+        await apply_adjustoil_payload(context, payload)
+
+        try:
+            await q.edit_message_text(
+                "✅ Adjustment applied successfully.\n\n"
+                f"User: {payload['target_name']} ({payload['target_user_id']})\n"
+                f"Type: {payload['oil_type'].title()}\n"
+                f"Adjustment: {payload['amount']:+.1f}",
+            )
+        except Exception:
+            pass
+
+        user_state.pop(uid, None)
+        return
+
+    if kind == "massadjtype":
+        oil_type = parts[2]
+        st["oil_type"] = oil_type
+        st["stage"] = "awaiting_amount"
+
+        try:
+            await q.edit_message_text(
+                f"🛠 Selected OIL type: {oil_type.title()}\n\n"
+                f"Enter adjustment amount.\n"
+                f"Use positive to add, negative to subtract.\n"
+                f"Examples: 1.0, -0.5",
+                reply_markup=cancel_keyboard(sid),
+            )
+        except Exception:
+            pass
+        return
+
+    if kind == "massadjconfirm":
+        payload = st.get("payload")
+        if not payload:
+            await q.answer("Nothing to confirm.", show_alert=True)
+            return
+
+        adjusted, skipped = await apply_massadjust_payload(context, payload)
+
+        lines = [
+            "✅ Mass adjustment applied successfully.",
+            "",
+            f"Type: {payload['oil_type'].title()}",
+            f"Adjustment: {payload['amount']:+.1f}",
+            f"Adjusted users: {len(adjusted)}",
+            f"Skipped users: {len(skipped)}",
+        ]
+
+        if skipped:
+            preview = ", ".join(skipped[:10])
+            if len(skipped) > 10:
+                preview += ", ..."
+            lines.append(f"Skipped: {preview}")
+
+        try:
+            await q.edit_message_text("\n".join(lines))
+        except Exception:
+            pass
+
+        user_state.pop(uid, None)
+        return
 
     if kind == "calnav":
         try:
@@ -151,7 +258,6 @@ async def handle_callback(update, context):
         payload = pending_payloads.pop(key, None)
         approver = q.from_user.full_name
         approver_id = q.from_user.id
-        approved = kind == "approve"
 
         if not payload:
             try:
@@ -161,13 +267,8 @@ async def handle_callback(update, context):
             return
 
         if payload.get("type") == "newuser":
-            await handle_newuser_apply(update, context, payload, approved, approver, approver_id)
-            summary = build_admin_summary_text(
-                payload,
-                approved=approved,
-                approver_name=approver,
-                final_off=None,
-            )
+            await handle_newuser_apply(update, context, payload, kind == "approve", approver, approver_id)
+            summary = build_admin_summary_text(payload, approved=(kind == "approve"), approver_name=approver, final_off=None)
             try:
                 await q.edit_message_text(summary)
             except Exception:
@@ -175,16 +276,21 @@ async def handle_callback(update, context):
             return
 
         if payload.get("type") == "single":
-            final_off = payload.get("final_off") if approved else None
-            await handle_single_apply(update, context, payload, approved, approver, approver_id)
-            summary = build_admin_summary_text(
-                payload,
-                approved=approved,
-                approver_name=approver,
-                final_off=final_off,
-            )
+            await handle_single_apply(update, context, payload, kind == "approve", approver, approver_id)
+            final_off = None
+            if kind == "approve":
+                cur = last_off_for_user(payload["user_id"])
+                calc = cur + (payload["days"] if "clock" in payload["action"] else -payload["days"])
+                final_off = calc
             try:
-                await q.edit_message_text(summary)
+                await q.edit_message_text(
+                    build_admin_summary_text(
+                        payload,
+                        approved=(kind == "approve"),
+                        approver_name=approver,
+                        final_off=final_off,
+                    )
+                )
             except Exception:
                 pass
             return
