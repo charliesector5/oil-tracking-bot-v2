@@ -15,6 +15,7 @@ from bot.conversations import (
 )
 from constants import HELP_TEXT, START_TEXT
 from services.sheets_repo import healthcheck, try_get_worksheet_title
+from services.ledger import compute_overview, compute_user_summary
 
 
 async def cmd_start(update, context):
@@ -44,11 +45,64 @@ async def cmd_sheetinfo(update, context):
 
 
 async def cmd_summary(update, context):
-    await update.message.reply_text("Summary is temporarily under rebuild in v2.")
+    uid = str(update.effective_user.id)
+    s = compute_user_summary(uid)
+
+    text = (
+        f"📊 *Your OIL Summary*\n\n"
+        f"👤 Name: {s.user_name}\n"
+        f"🆔 ID: {s.user_id}\n"
+        f"🔹 Total OIL: {s.total_balance:.1f}\n"
+        f"🔸 Normal OIL: {s.normal_balance:.1f}\n"
+        f"🏖 Active PH OIL: {s.ph_active:.1f}\n"
+        f"⌛ Expired PH OIL: {s.ph_expired:.1f}\n"
+        f"⭐ Active Special OIL: {s.special_active:.1f}\n"
+        f"⌛ Expired Special OIL: {s.special_expired:.1f}\n"
+    )
+
+    if s.last_action or s.last_application_date:
+        text += (
+            f"\nLast record:\n"
+            f"- Action: {s.last_action or '—'}\n"
+            f"- Application Date: {s.last_application_date or '—'}"
+        )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_overview(update, context):
-    await update.message.reply_text("Overview is temporarily under rebuild in v2.")
+    items = compute_overview()
+    if not items:
+        await update.message.reply_text("No records found.")
+        return
+
+    lines = ["📋 *Sector OIL Overview*\n"]
+    for s in items:
+        lines.append(
+            f"{s.user_name}\n"
+            f"Total: {s.total_balance:.1f} | "
+            f"Normal: {s.normal_balance:.1f} | "
+            f"PH: {s.ph_active:.1f} | "
+            f"Special: {s.special_active:.1f}"
+        )
+
+    text = "\n\n".join(lines)
+
+    # Telegram message limit guard
+    if len(text) <= 3800:
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    chunk = ""
+    for block in lines:
+        part = block + "\n\n"
+        if len(chunk) + len(part) > 3800:
+            await update.message.reply_text(chunk.strip(), parse_mode="Markdown")
+            chunk = ""
+        chunk += part
+
+    if chunk.strip():
+        await update.message.reply_text(chunk.strip(), parse_mode="Markdown")
 
 
 def register_handlers(application):
