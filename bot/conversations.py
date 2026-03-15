@@ -299,10 +299,6 @@ def build_admin_summary_text(payload: dict, approved: bool, approver_name: str, 
                 f"Normal OIL will go negative: {payload.get('projected_normal', 0.0):.1f}",
             ])
 
-        if final_off is not None and approved:
-            lines.append("")
-            lines.append(f"Final Off Row Value: {final_off:.1f}")
-
         lines.append(f"Approved by: {approver_name}")
         return "\n".join(lines)
 
